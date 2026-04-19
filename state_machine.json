@@ -1,0 +1,160 @@
+{
+  "Comment": "Serverless video analysis pipeline: extract frames → analyze with Bedrock Nova → embed with Titan → embed with Marengo → save results",
+  "StartAt": "ExtractFrames",
+  "States": {
+
+    "ExtractFrames": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FrameExtractorFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "bucket.$": "$.Payload.bucket",
+        "key.$": "$.Payload.key",
+        "video_id.$": "$.Payload.video_id",
+        "frames_bucket.$": "$.Payload.frames_bucket",
+        "frame_keys.$": "$.Payload.frame_keys",
+        "num_frames.$": "$.Payload.num_frames",
+        "duration_seconds.$": "$.Payload.duration_seconds"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleError",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AnalyzeFramesWithBedrock"
+    },
+
+    "AnalyzeFramesWithBedrock": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${BedrockAnalyzerFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "bucket.$": "$.Payload.bucket",
+        "key.$": "$.Payload.key",
+        "video_id.$": "$.Payload.video_id",
+        "frames_bucket.$": "$.Payload.frames_bucket",
+        "frame_keys.$": "$.Payload.frame_keys",
+        "num_frames.$": "$.Payload.num_frames",
+        "duration_seconds.$": "$.Payload.duration_seconds",
+        "frame_analyses.$": "$.Payload.frame_analyses"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleError",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "GetMarengoEmbeddings"
+    },
+
+    "GetMarengoEmbeddings": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${MarengoEmbeddingsFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "bucket.$": "$.Payload.bucket",
+        "key.$": "$.Payload.key",
+        "video_id.$": "$.Payload.video_id",
+        "frames_bucket.$": "$.Payload.frames_bucket",
+        "frame_keys.$": "$.Payload.frame_keys",
+        "num_frames.$": "$.Payload.num_frames",
+        "duration_seconds.$": "$.Payload.duration_seconds",
+        "frame_analyses.$": "$.Payload.frame_analyses",
+        "marengo_embedding.$": "$.Payload.marengo_embedding",
+        "marengo_model.$": "$.Payload.marengo_model"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleError",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "SaveResults"
+    },
+
+    "SaveResults": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ResultsWriterFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "video_id.$": "$.Payload.video_id",
+        "dynamodb_table.$": "$.Payload.dynamodb_table",
+        "result_s3_key.$": "$.Payload.result_s3_key",
+        "summary.$": "$.Payload.summary",
+        "processed_at.$": "$.Payload.processed_at"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleError",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "Done"
+    },
+
+    "Done": {
+      "Type": "Succeed"
+    },
+
+    "HandleError": {
+      "Type": "Fail",
+      "Error": "VideoAnalysisPipelineError",
+      "Cause": "One or more steps in the pipeline failed. Check CloudWatch Logs for details."
+    }
+
+  }
+}
